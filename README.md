@@ -31,3 +31,7 @@ Raspberry Pi kernel module to drive the front panel from Adagio Sound Server wit
 |  glyph 6 |   168   |
 |  glyph 7 |   176   |
 |  glyph 8 |   184   |
+
+# Support files
+ - ifplugd/piadagio_fp - add to ifplugd, lights the 'online' led when interface becomes active
+ - udev/98-piadagio.rules - changes the group of the character device to the one specificied 
