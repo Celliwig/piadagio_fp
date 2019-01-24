@@ -59,10 +59,14 @@ static int piadagio_fp_major;
 
 // Actual data storage
 static struct piadagio_fp_char_buffer piadagio_fp_buffer_lcd_screen;	// Buffer for the LCD screen
-static char *piadagio_fp_buffer_index = 0;
-static char piadagio_fp_buffer_i2c_rw[I2C_BUFFER_LEN];			// Structure to r/w i2c data (+1 for the null character from sprintf)
+static struct piadagio_fp_glyphs piadagio_fp_buffer_lcd_ugram;		// Buffer for the LCD UGRAM
+static char *piadagio_fp_buffer_index_ptr = 0;
+static unsigned char piadagio_fp_buffer_i2c_rw[I2C_BUFFER_LEN];		// Structure to r/w i2c data
+static unsigned char *piadagio_fp_glyph_index_ptr = 0;
+static unsigned char piadagio_fp_write_to_buffer = BUFFER_WRITE_CHAR;	// Which buffer to write to
 static unsigned int piadagio_fp_buffer_command = 0;			// Command read from the FP
 static unsigned long piadagio_fp_i2c_update_lcd_counter = 0;		// Update counter (LCD)
+static unsigned long piadagio_fp_i2c_update_glyph_counter = 0;		// Update counter (Glyph)
 static unsigned long piadagio_fp_i2c_update_led_counter = 0;		// Update counter (LED)
 static unsigned long piadagio_fp_i2c_update_errors_counter = 0;		// Update errors counter
 static unsigned long piadagio_fp_i2c_update_retries_counter = 0;	// Update retry counter
@@ -70,6 +74,7 @@ static unsigned short piadagio_fp_i2c_update_do = 1;			// Controls whether an up
 static unsigned short piadagio_fp_i2c_update_do_screen = 1;		// Controls whether a screen update actually happens
 static unsigned short piadagio_fp_led_online = 0;			// Online LED status
 static unsigned short piadagio_fp_led_power = 1;			// Power LED status
+static bool piadagio_fp_glyph_updated[8];				// Stores whether a LCD UGRAM glyph has been updated
 static bool piadagio_fp_i2c_update_screen_other_half = false;		// Used to store which half of the screen to update next
 
 ////////////////////////////////////////////////////////////////////
@@ -86,6 +91,22 @@ void piadagio_fp_buffer_lcd_clear() {
 	for (i = 0; i < (4 * LCD_LINE_LEN); i++) {
 		*tmp_index = ' ';
 		tmp_index++;
+	}
+}
+
+// Initialise LCD UGRAM buffer
+void piadagio_fp_buffer_ugram_init() {
+	unsigned int i,j;
+
+	printd("%s\n", __FUNCTION__);
+
+	for (i = 0; i < 8; i++) {
+		for (j = 0; j < 8; j++) {
+//			piadagio_fp_buffer_lcd_ugram.glyph[i].pixel_line[j] = 0xff;
+			piadagio_fp_buffer_lcd_ugram.glyph[i].pixel_line[j] = j * 2;
+		}
+
+		piadagio_fp_glyph_updated[i] = false;
 	}
 }
 
@@ -126,7 +147,7 @@ int piadagio_fp_i2c_update_screen() {
 		bytes_2_send = snprintf(&piadagio_fp_buffer_i2c_rw[0], I2C_BUFFER_LEN,
 					"%c%c%c%.*s%.*s",					// Format: length + cmd + position + lines
 					I2C_MSG_LEN_UPDATE_LCD - 1,				// Message length doesn't include this byte
-					0x02,							// Screen write cmd
+					I2C_MSG_TYPE_CHAR,					// Screen write cmd
 					0x0,							// Screen write position
 					LCD_LINE_LEN,piadagio_fp_buffer_lcd_screen.line1,
 					LCD_LINE_LEN,piadagio_fp_buffer_lcd_screen.line3);
@@ -134,7 +155,7 @@ int piadagio_fp_i2c_update_screen() {
 		bytes_2_send = snprintf(&piadagio_fp_buffer_i2c_rw[0], I2C_BUFFER_LEN,
 					"%c%c%c%.*s%.*s",					// Format: length + cmd + position + lines
 					I2C_MSG_LEN_UPDATE_LCD - 1,				// Message length doesn't include this byte
-					0x02,							// Screen write cmd
+					I2C_MSG_TYPE_CHAR,					// Screen write cmd
 					0x1,							// Screen write position
 					LCD_LINE_LEN,piadagio_fp_buffer_lcd_screen.line2,
 					LCD_LINE_LEN,piadagio_fp_buffer_lcd_screen.line4);
@@ -161,6 +182,44 @@ int piadagio_fp_i2c_update_screen() {
 	return -1;
 }
 
+// Updates a CGRAM glyph
+int piadagio_fp_i2c_update_glyph(unsigned char glyph_index) {
+	struct piadagio_fp_data *data = i2c_get_clientdata(piadagio_fp_i2c_client);
+	unsigned int bytes_2_send;
+	unsigned char tmp_i2c_buffer[I2C_MSG_LEN_UPDATE_CGRAM + 1];
+
+	//printd("%s\n", __FUNCTION__);
+
+	bytes_2_send = snprintf(&tmp_i2c_buffer[0], (I2C_MSG_LEN_UPDATE_CGRAM + 1),	// Buffer size includes null character from sprintf
+				"%c%c%c%c%c%c%c%c%c%c%c",				// Format: length + cmd + glyph index + glyph bytes[8]
+				I2C_MSG_LEN_UPDATE_CGRAM - 1,				// Message length, not including this byte
+				I2C_MSG_TYPE_GLYPH,					// Glyph update cmd
+				glyph_index,
+				piadagio_fp_buffer_lcd_ugram.glyph[glyph_index].pixel_line[0],
+				piadagio_fp_buffer_lcd_ugram.glyph[glyph_index].pixel_line[1],
+				piadagio_fp_buffer_lcd_ugram.glyph[glyph_index].pixel_line[2],
+				piadagio_fp_buffer_lcd_ugram.glyph[glyph_index].pixel_line[3],
+				piadagio_fp_buffer_lcd_ugram.glyph[glyph_index].pixel_line[4],
+				piadagio_fp_buffer_lcd_ugram.glyph[glyph_index].pixel_line[5],
+				piadagio_fp_buffer_lcd_ugram.glyph[glyph_index].pixel_line[6],
+				piadagio_fp_buffer_lcd_ugram.glyph[glyph_index].pixel_line[7]);
+	if (bytes_2_send == I2C_MSG_LEN_UPDATE_CGRAM) {
+		mutex_lock(&data->update_lock);
+		bytes_2_send = i2c_master_send(piadagio_fp_i2c_client, &tmp_i2c_buffer[0], I2C_MSG_LEN_UPDATE_CGRAM);
+		mutex_unlock(&data->update_lock);
+		if (bytes_2_send == I2C_MSG_LEN_UPDATE_CGRAM) {
+			//printd("%s: Updated glyph.\n", __FUNCTION__);
+			return 0;
+		} else {
+			printe("%s: Failed to write glyph update.\n", __FUNCTION__);
+			return -1;
+		}
+	}
+
+	printe("%s: Failed to prepare write buffer.\n", __FUNCTION__);
+	return -1;
+}
+
 // Updates the state of the FP LEDs
 int piadagio_fp_i2c_update_leds() {
 	struct piadagio_fp_data *data = i2c_get_clientdata(piadagio_fp_i2c_client);
@@ -179,14 +238,14 @@ int piadagio_fp_i2c_update_leds() {
 	bytes_2_send = snprintf(&tmp_i2c_buffer[0], (I2C_MSG_LEN_UPDATE_LED + 1),	// Buffer size includes null character from sprintf
 				"%c%c%c",						// Format: length + cmd + led status
 				I2C_MSG_LEN_UPDATE_LED - 1,				// Message length, not including this byte
-				0x4,							// LED update cmd
+				I2C_MSG_TYPE_LED,					// LED update cmd
 				tmp_led_status);					// LED status bits
 	if (bytes_2_send == I2C_MSG_LEN_UPDATE_LED) {
 		mutex_lock(&data->update_lock);
 		bytes_2_send = i2c_master_send(piadagio_fp_i2c_client, &tmp_i2c_buffer[0], I2C_MSG_LEN_UPDATE_LED);
 		mutex_unlock(&data->update_lock);
 		if (bytes_2_send == I2C_MSG_LEN_UPDATE_LED) {
-			//printd("%s: Updated screen.\n", __FUNCTION__);
+			//printd("%s: Updated LEDs.\n", __FUNCTION__);
 			return 0;
 		} else {
 			printe("%s: Failed to write LED update.\n", __FUNCTION__);
@@ -203,7 +262,8 @@ int piadagio_fp_i2c_update_leds() {
 /////////////////////////////////////////////////////////////////////
 // Task to periodically update the lcd screen from the buffer
 static void piadagio_fp_task_lcd_update(struct work_struct *work) {
-	int fp_status;
+	bool update_screen = true;
+	int fp_status, i;
 	short task_delay = 10;
 
 	//printd("%s\n", __FUNCTION__);
@@ -211,11 +271,27 @@ static void piadagio_fp_task_lcd_update(struct work_struct *work) {
 	if (piadagio_fp_i2c_update_do > 0) {						// Check whether to run an update
 		fp_status = piadagio_fp_i2c_get_status();				// Check the FP status,
 
-		if (piadagio_fp_i2c_update_do_screen > 0) {				// Can we update the screen? Waiting for fsync?
-			piadagio_fp_i2c_update_lcd_counter++;				// Debug helper, to know if this rountine is being executed
+		if (fp_status >= 0) {
+			if (fp_status < 2) {						// Is it ready for another command?
+				for (i = 0; i < 8; i++) {				// Check if the glyphs need updating
+					if (piadagio_fp_glyph_updated[i]) {
+						fp_status = piadagio_fp_i2c_update_glyph(i);
+						if (fp_status == 0) {			// Did the write succeed?
+							piadagio_fp_glyph_updated[i] = false;
+							piadagio_fp_i2c_update_glyph_counter++;
+						} else {
+							piadagio_fp_i2c_update_errors_counter++;
+							task_delay = 1;
+						}
+						update_screen = false;			// Stop screen update as glyph update has to be processed
+						break;					// Don't bother checking any others
+					}
+				}
 
-			if (fp_status >= 0) {
-				if (fp_status < 2) {					// Is it ready for another command?
+				// Can we update the screen? Waiting for fsync?
+				if (update_screen && (piadagio_fp_i2c_update_do_screen > 0)) {
+					piadagio_fp_i2c_update_lcd_counter++;		// Debug helper, to know if this rountine is being executed
+
 					fp_status = piadagio_fp_i2c_update_screen();
 					if (fp_status == 0) {				// Did the write succeed?
 						// Do we writing need to write the second half of the screen?
@@ -228,16 +304,16 @@ static void piadagio_fp_task_lcd_update(struct work_struct *work) {
 						piadagio_fp_i2c_update_errors_counter++;
 						task_delay = 1;
 					}
-				} else {						// FP processing existing command so reschedule
-					piadagio_fp_i2c_update_retries_counter++;
-					task_delay = 1;
+				} else {
+					task_delay = 1;					// Waiting for buffer to be updated, so reschedule
 				}
-			} else {							// Error reading, schedule another check
-				piadagio_fp_i2c_update_errors_counter++;
+			} else {							// FP processing existing command so reschedule
+				piadagio_fp_i2c_update_retries_counter++;
 				task_delay = 1;
 			}
-		} else {
-			task_delay = 1;							// Waiting for buffer to be updated, so reschedule
+		} else {								// Error reading, schedule another check
+			piadagio_fp_i2c_update_errors_counter++;
+			task_delay = 1;
 		}
 	}
 
@@ -299,7 +375,9 @@ static int piadagio_fp_open(struct inode * inode, struct file *fp) {
 		return -ENODEV;
 	}
 
-	piadagio_fp_buffer_index = piadagio_fp_buffer_lcd_screen.line1;	// Reset screen buffer pointer
+	piadagio_fp_buffer_index_ptr = piadagio_fp_buffer_lcd_screen.line1;		// Reset screen buffer pointer
+	piadagio_fp_glyph_index_ptr = piadagio_fp_buffer_lcd_ugram.glyph[0].pixel_line;	// Reset UGRAM buffer pointer
+	piadagio_fp_write_to_buffer = BUFFER_WRITE_CHAR;				// Reset to writing character buffer
 	return 0;
 }
 
@@ -326,29 +404,49 @@ static ssize_t piadagio_fp_read(struct file *filp,			/* see include/linux/fs.h  
 	return -EFAULT;
 }
 
-// Write to the lcd screen buffer
+// Write to the lcd screen/glyph buffer
 static ssize_t piadagio_fp_write(struct file * fp, const char __user * buffer, size_t count, loff_t * offset) {
-	int num_write = 0;
+	int num_write = 0, tmp_glyph_index = 0;
 
 	printd("%s: Write operation with [%d] bytes, from offset [%lld]\n", __FUNCTION__, count, ((long long int) *offset));
 
-	// Iterate through the user space buffer
-	while (count) {
-		if (copy_from_user(piadagio_fp_buffer_index, (buffer + num_write), 1)) {
-			return -EFAULT;
+	if (piadagio_fp_write_to_buffer == BUFFER_WRITE_CHAR) {
+		// Iterate through the user space buffer
+		while (count) {
+			if (copy_from_user(piadagio_fp_buffer_index_ptr, (buffer + num_write), 1)) {
+				return -EFAULT;
+			}
+
+			num_write++;
+			count--;
+			piadagio_fp_buffer_index_ptr++;
+			// Reset the screen buffer pointer, if we have overrun the end
+			if (piadagio_fp_buffer_index_ptr >= (piadagio_fp_buffer_lcd_screen.line1 + SCREEN_BUFFER_LEN)) {
+				piadagio_fp_buffer_index_ptr = piadagio_fp_buffer_lcd_screen.line1;
+			}
 		}
 
-		num_write++;
-		count--;
-		piadagio_fp_buffer_index++;
-		// Reset the screen buffer pointer, if we have overrun the end
-		if (piadagio_fp_buffer_index >= (piadagio_fp_buffer_lcd_screen.line1 + SCREEN_BUFFER_LEN)) {
-			piadagio_fp_buffer_index = piadagio_fp_buffer_lcd_screen.line1;
+		if (fp_require_fsync) {
+			piadagio_fp_i2c_update_do_screen = 0;
 		}
-	}
+	} else if (piadagio_fp_write_to_buffer == BUFFER_WRITE_GLYPH) {
+		// Iterate through the user space buffer
+		while (count) {
+			if (copy_from_user(piadagio_fp_glyph_index_ptr, (buffer + num_write), 1)) {
+				return -EFAULT;
+			}
 
-	if (fp_require_fsync) {
-		piadagio_fp_i2c_update_do_screen = 0;
+			tmp_glyph_index = (piadagio_fp_glyph_index_ptr - piadagio_fp_buffer_lcd_ugram.glyph[0].pixel_line) / 8;
+			piadagio_fp_glyph_updated[tmp_glyph_index] = true;
+
+			num_write++;
+			count--;
+			piadagio_fp_glyph_index_ptr++;
+			// Reset the glyph buffer pointer, if we have overrun the end
+			if (piadagio_fp_glyph_index_ptr >= (piadagio_fp_buffer_lcd_ugram.glyph[0].pixel_line + GLYPH_BUFFER_LEN)) {
+				piadagio_fp_glyph_index_ptr = piadagio_fp_buffer_lcd_ugram.glyph[0].pixel_line;
+			}
+		}
 	}
 
 	return num_write;
@@ -364,8 +462,15 @@ static loff_t piadagio_fp_llseek(struct file *file, loff_t offset, int origin) {
 	}
 
 	if (offset < SCREEN_BUFFER_LEN) {
-		piadagio_fp_buffer_index = piadagio_fp_buffer_lcd_screen.line1;
-		piadagio_fp_buffer_index += offset;
+		piadagio_fp_buffer_index_ptr = piadagio_fp_buffer_lcd_screen.line1;
+		piadagio_fp_buffer_index_ptr += offset;
+
+		piadagio_fp_write_to_buffer = BUFFER_WRITE_CHAR;
+	} else if ((offset >= 128) && (offset <= (128 + (GLYPH_BUFFER_LEN - 1)))) {
+		piadagio_fp_glyph_index_ptr = piadagio_fp_buffer_lcd_ugram.glyph[0].pixel_line;
+		piadagio_fp_glyph_index_ptr += (offset - 128);
+
+		piadagio_fp_write_to_buffer = BUFFER_WRITE_GLYPH;
 	} else {
 		return -EFAULT;
 	}
@@ -414,8 +519,9 @@ static ssize_t piadagio_fp_get_lcd_buffer(struct device *dev, struct device_attr
 static ssize_t piadagio_fp_get_stats(struct device *dev, struct device_attribute *dev_attr, char * buf) {
 	printd("%s\n", __FUNCTION__);
 	// Copy the result back to buf
-	return sprintf(buf, "Update counter (LCD): %lu\nUpdate counter (LED): %lu\nUpdate retries counter: %lu\nUpdate error counter: %lu\n",
+	return sprintf(buf, "Update counter (LCD): %lu\nUpdate counter (Glyph): %lu\nUpdate counter (LED): %lu\nUpdate retries counter: %lu\nUpdate error counter: %lu\n",
 			piadagio_fp_i2c_update_lcd_counter,
+			piadagio_fp_i2c_update_glyph_counter,
 			piadagio_fp_i2c_update_led_counter,
 			piadagio_fp_i2c_update_retries_counter,
 			piadagio_fp_i2c_update_errors_counter);
@@ -479,6 +585,142 @@ static ssize_t piadagio_fp_get_i2c_buffer(struct device *dev, struct device_attr
 	return tmp_index;
 }
 
+// SysFS object to display UGRAM glyph 0
+static ssize_t piadagio_fp_get_ugram_glyph0(struct device *dev, struct device_attribute *dev_attr, char * buf) {
+	struct piadagio_fp_glyph tmp_glyph = piadagio_fp_buffer_lcd_ugram.glyph[0];
+
+	printd("%s\n", __FUNCTION__);
+	// Copy the result back to buf
+	return sprintf(buf, "Glyph 0:\nUpdated: %u\n" GLYPH_PRINT, piadagio_fp_glyph_updated[0],
+				((tmp_glyph.pixel_line[0] & 16) > 0), ((tmp_glyph.pixel_line[0] & 8) > 0), ((tmp_glyph.pixel_line[0] & 4) > 0), ((tmp_glyph.pixel_line[0] & 2) > 0), ((tmp_glyph.pixel_line[0] & 1) > 0), tmp_glyph.pixel_line[0],
+				((tmp_glyph.pixel_line[1] & 16) > 0), ((tmp_glyph.pixel_line[1] & 8) > 0), ((tmp_glyph.pixel_line[1] & 4) > 0), ((tmp_glyph.pixel_line[1] & 2) > 0), ((tmp_glyph.pixel_line[1] & 1) > 0), tmp_glyph.pixel_line[1],
+				((tmp_glyph.pixel_line[2] & 16) > 0), ((tmp_glyph.pixel_line[2] & 8) > 0), ((tmp_glyph.pixel_line[2] & 4) > 0), ((tmp_glyph.pixel_line[2] & 2) > 0), ((tmp_glyph.pixel_line[2] & 1) > 0), tmp_glyph.pixel_line[2],
+				((tmp_glyph.pixel_line[3] & 16) > 0), ((tmp_glyph.pixel_line[3] & 8) > 0), ((tmp_glyph.pixel_line[3] & 4) > 0), ((tmp_glyph.pixel_line[3] & 2) > 0), ((tmp_glyph.pixel_line[3] & 1) > 0), tmp_glyph.pixel_line[3],
+				((tmp_glyph.pixel_line[4] & 16) > 0), ((tmp_glyph.pixel_line[4] & 8) > 0), ((tmp_glyph.pixel_line[4] & 4) > 0), ((tmp_glyph.pixel_line[4] & 2) > 0), ((tmp_glyph.pixel_line[4] & 1) > 0), tmp_glyph.pixel_line[4],
+				((tmp_glyph.pixel_line[5] & 16) > 0), ((tmp_glyph.pixel_line[5] & 8) > 0), ((tmp_glyph.pixel_line[5] & 4) > 0), ((tmp_glyph.pixel_line[5] & 2) > 0), ((tmp_glyph.pixel_line[5] & 1) > 0), tmp_glyph.pixel_line[5],
+				((tmp_glyph.pixel_line[6] & 16) > 0), ((tmp_glyph.pixel_line[6] & 8) > 0), ((tmp_glyph.pixel_line[6] & 4) > 0), ((tmp_glyph.pixel_line[6] & 2) > 0), ((tmp_glyph.pixel_line[6] & 1) > 0), tmp_glyph.pixel_line[6],
+				((tmp_glyph.pixel_line[7] & 16) > 0), ((tmp_glyph.pixel_line[7] & 8) > 0), ((tmp_glyph.pixel_line[7] & 4) > 0), ((tmp_glyph.pixel_line[7] & 2) > 0), ((tmp_glyph.pixel_line[7] & 1) > 0), tmp_glyph.pixel_line[7]);
+}
+
+// SysFS object to display UGRAM glyph 1
+static ssize_t piadagio_fp_get_ugram_glyph1(struct device *dev, struct device_attribute *dev_attr, char * buf) {
+	struct piadagio_fp_glyph tmp_glyph = piadagio_fp_buffer_lcd_ugram.glyph[1];
+
+	printd("%s\n", __FUNCTION__);
+	// Copy the result back to buf
+	return sprintf(buf, "Glyph 1:\nUpdated: %u\n" GLYPH_PRINT, piadagio_fp_glyph_updated[1],
+				((tmp_glyph.pixel_line[0] & 16) > 0), ((tmp_glyph.pixel_line[0] & 8) > 0), ((tmp_glyph.pixel_line[0] & 4) > 0), ((tmp_glyph.pixel_line[0] & 2) > 0), ((tmp_glyph.pixel_line[0] & 1) > 0), tmp_glyph.pixel_line[0],
+				((tmp_glyph.pixel_line[1] & 16) > 0), ((tmp_glyph.pixel_line[1] & 8) > 0), ((tmp_glyph.pixel_line[1] & 4) > 0), ((tmp_glyph.pixel_line[1] & 2) > 0), ((tmp_glyph.pixel_line[1] & 1) > 0), tmp_glyph.pixel_line[1],
+				((tmp_glyph.pixel_line[2] & 16) > 0), ((tmp_glyph.pixel_line[2] & 8) > 0), ((tmp_glyph.pixel_line[2] & 4) > 0), ((tmp_glyph.pixel_line[2] & 2) > 0), ((tmp_glyph.pixel_line[2] & 1) > 0), tmp_glyph.pixel_line[2],
+				((tmp_glyph.pixel_line[3] & 16) > 0), ((tmp_glyph.pixel_line[3] & 8) > 0), ((tmp_glyph.pixel_line[3] & 4) > 0), ((tmp_glyph.pixel_line[3] & 2) > 0), ((tmp_glyph.pixel_line[3] & 1) > 0), tmp_glyph.pixel_line[3],
+				((tmp_glyph.pixel_line[4] & 16) > 0), ((tmp_glyph.pixel_line[4] & 8) > 0), ((tmp_glyph.pixel_line[4] & 4) > 0), ((tmp_glyph.pixel_line[4] & 2) > 0), ((tmp_glyph.pixel_line[4] & 1) > 0), tmp_glyph.pixel_line[4],
+				((tmp_glyph.pixel_line[5] & 16) > 0), ((tmp_glyph.pixel_line[5] & 8) > 0), ((tmp_glyph.pixel_line[5] & 4) > 0), ((tmp_glyph.pixel_line[5] & 2) > 0), ((tmp_glyph.pixel_line[5] & 1) > 0), tmp_glyph.pixel_line[5],
+				((tmp_glyph.pixel_line[6] & 16) > 0), ((tmp_glyph.pixel_line[6] & 8) > 0), ((tmp_glyph.pixel_line[6] & 4) > 0), ((tmp_glyph.pixel_line[6] & 2) > 0), ((tmp_glyph.pixel_line[6] & 1) > 0), tmp_glyph.pixel_line[6],
+				((tmp_glyph.pixel_line[7] & 16) > 0), ((tmp_glyph.pixel_line[7] & 8) > 0), ((tmp_glyph.pixel_line[7] & 4) > 0), ((tmp_glyph.pixel_line[7] & 2) > 0), ((tmp_glyph.pixel_line[7] & 1) > 0), tmp_glyph.pixel_line[7]);
+}
+
+// SysFS object to display UGRAM glyph 2
+static ssize_t piadagio_fp_get_ugram_glyph2(struct device *dev, struct device_attribute *dev_attr, char * buf) {
+	struct piadagio_fp_glyph tmp_glyph = piadagio_fp_buffer_lcd_ugram.glyph[2];
+
+	printd("%s\n", __FUNCTION__);
+	// Copy the result back to buf
+	return sprintf(buf, "Glyph 2:\nUpdated: %u\n" GLYPH_PRINT, piadagio_fp_glyph_updated[2],
+				((tmp_glyph.pixel_line[0] & 16) > 0), ((tmp_glyph.pixel_line[0] & 8) > 0), ((tmp_glyph.pixel_line[0] & 4) > 0), ((tmp_glyph.pixel_line[0] & 2) > 0), ((tmp_glyph.pixel_line[0] & 1) > 0), tmp_glyph.pixel_line[0],
+				((tmp_glyph.pixel_line[1] & 16) > 0), ((tmp_glyph.pixel_line[1] & 8) > 0), ((tmp_glyph.pixel_line[1] & 4) > 0), ((tmp_glyph.pixel_line[1] & 2) > 0), ((tmp_glyph.pixel_line[1] & 1) > 0), tmp_glyph.pixel_line[1],
+				((tmp_glyph.pixel_line[2] & 16) > 0), ((tmp_glyph.pixel_line[2] & 8) > 0), ((tmp_glyph.pixel_line[2] & 4) > 0), ((tmp_glyph.pixel_line[2] & 2) > 0), ((tmp_glyph.pixel_line[2] & 1) > 0), tmp_glyph.pixel_line[2],
+				((tmp_glyph.pixel_line[3] & 16) > 0), ((tmp_glyph.pixel_line[3] & 8) > 0), ((tmp_glyph.pixel_line[3] & 4) > 0), ((tmp_glyph.pixel_line[3] & 2) > 0), ((tmp_glyph.pixel_line[3] & 1) > 0), tmp_glyph.pixel_line[3],
+				((tmp_glyph.pixel_line[4] & 16) > 0), ((tmp_glyph.pixel_line[4] & 8) > 0), ((tmp_glyph.pixel_line[4] & 4) > 0), ((tmp_glyph.pixel_line[4] & 2) > 0), ((tmp_glyph.pixel_line[4] & 1) > 0), tmp_glyph.pixel_line[4],
+				((tmp_glyph.pixel_line[5] & 16) > 0), ((tmp_glyph.pixel_line[5] & 8) > 0), ((tmp_glyph.pixel_line[5] & 4) > 0), ((tmp_glyph.pixel_line[5] & 2) > 0), ((tmp_glyph.pixel_line[5] & 1) > 0), tmp_glyph.pixel_line[5],
+				((tmp_glyph.pixel_line[6] & 16) > 0), ((tmp_glyph.pixel_line[6] & 8) > 0), ((tmp_glyph.pixel_line[6] & 4) > 0), ((tmp_glyph.pixel_line[6] & 2) > 0), ((tmp_glyph.pixel_line[6] & 1) > 0), tmp_glyph.pixel_line[6],
+				((tmp_glyph.pixel_line[7] & 16) > 0), ((tmp_glyph.pixel_line[7] & 8) > 0), ((tmp_glyph.pixel_line[7] & 4) > 0), ((tmp_glyph.pixel_line[7] & 2) > 0), ((tmp_glyph.pixel_line[7] & 1) > 0), tmp_glyph.pixel_line[7]);
+}
+
+// SysFS object to display UGRAM glyph 3
+static ssize_t piadagio_fp_get_ugram_glyph3(struct device *dev, struct device_attribute *dev_attr, char * buf) {
+	struct piadagio_fp_glyph tmp_glyph = piadagio_fp_buffer_lcd_ugram.glyph[3];
+
+	printd("%s\n", __FUNCTION__);
+	// Copy the result back to buf
+	return sprintf(buf, "Glyph 3:\nUpdated: %u\n" GLYPH_PRINT, piadagio_fp_glyph_updated[3],
+				((tmp_glyph.pixel_line[0] & 16) > 0), ((tmp_glyph.pixel_line[0] & 8) > 0), ((tmp_glyph.pixel_line[0] & 4) > 0), ((tmp_glyph.pixel_line[0] & 2) > 0), ((tmp_glyph.pixel_line[0] & 1) > 0), tmp_glyph.pixel_line[0],
+				((tmp_glyph.pixel_line[1] & 16) > 0), ((tmp_glyph.pixel_line[1] & 8) > 0), ((tmp_glyph.pixel_line[1] & 4) > 0), ((tmp_glyph.pixel_line[1] & 2) > 0), ((tmp_glyph.pixel_line[1] & 1) > 0), tmp_glyph.pixel_line[1],
+				((tmp_glyph.pixel_line[2] & 16) > 0), ((tmp_glyph.pixel_line[2] & 8) > 0), ((tmp_glyph.pixel_line[2] & 4) > 0), ((tmp_glyph.pixel_line[2] & 2) > 0), ((tmp_glyph.pixel_line[2] & 1) > 0), tmp_glyph.pixel_line[2],
+				((tmp_glyph.pixel_line[3] & 16) > 0), ((tmp_glyph.pixel_line[3] & 8) > 0), ((tmp_glyph.pixel_line[3] & 4) > 0), ((tmp_glyph.pixel_line[3] & 2) > 0), ((tmp_glyph.pixel_line[3] & 1) > 0), tmp_glyph.pixel_line[3],
+				((tmp_glyph.pixel_line[4] & 16) > 0), ((tmp_glyph.pixel_line[4] & 8) > 0), ((tmp_glyph.pixel_line[4] & 4) > 0), ((tmp_glyph.pixel_line[4] & 2) > 0), ((tmp_glyph.pixel_line[4] & 1) > 0), tmp_glyph.pixel_line[4],
+				((tmp_glyph.pixel_line[5] & 16) > 0), ((tmp_glyph.pixel_line[5] & 8) > 0), ((tmp_glyph.pixel_line[5] & 4) > 0), ((tmp_glyph.pixel_line[5] & 2) > 0), ((tmp_glyph.pixel_line[5] & 1) > 0), tmp_glyph.pixel_line[5],
+				((tmp_glyph.pixel_line[6] & 16) > 0), ((tmp_glyph.pixel_line[6] & 8) > 0), ((tmp_glyph.pixel_line[6] & 4) > 0), ((tmp_glyph.pixel_line[6] & 2) > 0), ((tmp_glyph.pixel_line[6] & 1) > 0), tmp_glyph.pixel_line[6],
+				((tmp_glyph.pixel_line[7] & 16) > 0), ((tmp_glyph.pixel_line[7] & 8) > 0), ((tmp_glyph.pixel_line[7] & 4) > 0), ((tmp_glyph.pixel_line[7] & 2) > 0), ((tmp_glyph.pixel_line[7] & 1) > 0), tmp_glyph.pixel_line[7]);
+}
+
+// SysFS object to display UGRAM glyph 4
+static ssize_t piadagio_fp_get_ugram_glyph4(struct device *dev, struct device_attribute *dev_attr, char * buf) {
+	struct piadagio_fp_glyph tmp_glyph = piadagio_fp_buffer_lcd_ugram.glyph[4];
+
+	printd("%s\n", __FUNCTION__);
+	// Copy the result back to buf
+	return sprintf(buf, "Glyph 4:\nUpdated: %u\n" GLYPH_PRINT, piadagio_fp_glyph_updated[4],
+				((tmp_glyph.pixel_line[0] & 16) > 0), ((tmp_glyph.pixel_line[0] & 8) > 0), ((tmp_glyph.pixel_line[0] & 4) > 0), ((tmp_glyph.pixel_line[0] & 2) > 0), ((tmp_glyph.pixel_line[0] & 1) > 0), tmp_glyph.pixel_line[0],
+				((tmp_glyph.pixel_line[1] & 16) > 0), ((tmp_glyph.pixel_line[1] & 8) > 0), ((tmp_glyph.pixel_line[1] & 4) > 0), ((tmp_glyph.pixel_line[1] & 2) > 0), ((tmp_glyph.pixel_line[1] & 1) > 0), tmp_glyph.pixel_line[1],
+				((tmp_glyph.pixel_line[2] & 16) > 0), ((tmp_glyph.pixel_line[2] & 8) > 0), ((tmp_glyph.pixel_line[2] & 4) > 0), ((tmp_glyph.pixel_line[2] & 2) > 0), ((tmp_glyph.pixel_line[2] & 1) > 0), tmp_glyph.pixel_line[2],
+				((tmp_glyph.pixel_line[3] & 16) > 0), ((tmp_glyph.pixel_line[3] & 8) > 0), ((tmp_glyph.pixel_line[3] & 4) > 0), ((tmp_glyph.pixel_line[3] & 2) > 0), ((tmp_glyph.pixel_line[3] & 1) > 0), tmp_glyph.pixel_line[3],
+				((tmp_glyph.pixel_line[4] & 16) > 0), ((tmp_glyph.pixel_line[4] & 8) > 0), ((tmp_glyph.pixel_line[4] & 4) > 0), ((tmp_glyph.pixel_line[4] & 2) > 0), ((tmp_glyph.pixel_line[4] & 1) > 0), tmp_glyph.pixel_line[4],
+				((tmp_glyph.pixel_line[5] & 16) > 0), ((tmp_glyph.pixel_line[5] & 8) > 0), ((tmp_glyph.pixel_line[5] & 4) > 0), ((tmp_glyph.pixel_line[5] & 2) > 0), ((tmp_glyph.pixel_line[5] & 1) > 0), tmp_glyph.pixel_line[5],
+				((tmp_glyph.pixel_line[6] & 16) > 0), ((tmp_glyph.pixel_line[6] & 8) > 0), ((tmp_glyph.pixel_line[6] & 4) > 0), ((tmp_glyph.pixel_line[6] & 2) > 0), ((tmp_glyph.pixel_line[6] & 1) > 0), tmp_glyph.pixel_line[6],
+				((tmp_glyph.pixel_line[7] & 16) > 0), ((tmp_glyph.pixel_line[7] & 8) > 0), ((tmp_glyph.pixel_line[7] & 4) > 0), ((tmp_glyph.pixel_line[7] & 2) > 0), ((tmp_glyph.pixel_line[7] & 1) > 0), tmp_glyph.pixel_line[7]);
+}
+
+// SysFS object to display UGRAM glyph 5
+static ssize_t piadagio_fp_get_ugram_glyph5(struct device *dev, struct device_attribute *dev_attr, char * buf) {
+	struct piadagio_fp_glyph tmp_glyph = piadagio_fp_buffer_lcd_ugram.glyph[5];
+
+	printd("%s\n", __FUNCTION__);
+	// Copy the result back to buf
+	return sprintf(buf, "Glyph 5:\nUpdated: %u\n" GLYPH_PRINT, piadagio_fp_glyph_updated[5],
+				((tmp_glyph.pixel_line[0] & 16) > 0), ((tmp_glyph.pixel_line[0] & 8) > 0), ((tmp_glyph.pixel_line[0] & 4) > 0), ((tmp_glyph.pixel_line[0] & 2) > 0), ((tmp_glyph.pixel_line[0] & 1) > 0), tmp_glyph.pixel_line[0],
+				((tmp_glyph.pixel_line[1] & 16) > 0), ((tmp_glyph.pixel_line[1] & 8) > 0), ((tmp_glyph.pixel_line[1] & 4) > 0), ((tmp_glyph.pixel_line[1] & 2) > 0), ((tmp_glyph.pixel_line[1] & 1) > 0), tmp_glyph.pixel_line[1],
+				((tmp_glyph.pixel_line[2] & 16) > 0), ((tmp_glyph.pixel_line[2] & 8) > 0), ((tmp_glyph.pixel_line[2] & 4) > 0), ((tmp_glyph.pixel_line[2] & 2) > 0), ((tmp_glyph.pixel_line[2] & 1) > 0), tmp_glyph.pixel_line[2],
+				((tmp_glyph.pixel_line[3] & 16) > 0), ((tmp_glyph.pixel_line[3] & 8) > 0), ((tmp_glyph.pixel_line[3] & 4) > 0), ((tmp_glyph.pixel_line[3] & 2) > 0), ((tmp_glyph.pixel_line[3] & 1) > 0), tmp_glyph.pixel_line[3],
+				((tmp_glyph.pixel_line[4] & 16) > 0), ((tmp_glyph.pixel_line[4] & 8) > 0), ((tmp_glyph.pixel_line[4] & 4) > 0), ((tmp_glyph.pixel_line[4] & 2) > 0), ((tmp_glyph.pixel_line[4] & 1) > 0), tmp_glyph.pixel_line[4],
+				((tmp_glyph.pixel_line[5] & 16) > 0), ((tmp_glyph.pixel_line[5] & 8) > 0), ((tmp_glyph.pixel_line[5] & 4) > 0), ((tmp_glyph.pixel_line[5] & 2) > 0), ((tmp_glyph.pixel_line[5] & 1) > 0), tmp_glyph.pixel_line[5],
+				((tmp_glyph.pixel_line[6] & 16) > 0), ((tmp_glyph.pixel_line[6] & 8) > 0), ((tmp_glyph.pixel_line[6] & 4) > 0), ((tmp_glyph.pixel_line[6] & 2) > 0), ((tmp_glyph.pixel_line[6] & 1) > 0), tmp_glyph.pixel_line[6],
+				((tmp_glyph.pixel_line[7] & 16) > 0), ((tmp_glyph.pixel_line[7] & 8) > 0), ((tmp_glyph.pixel_line[7] & 4) > 0), ((tmp_glyph.pixel_line[7] & 2) > 0), ((tmp_glyph.pixel_line[7] & 1) > 0), tmp_glyph.pixel_line[7]);
+}
+
+// SysFS object to display UGRAM glyph 6
+static ssize_t piadagio_fp_get_ugram_glyph6(struct device *dev, struct device_attribute *dev_attr, char * buf) {
+	struct piadagio_fp_glyph tmp_glyph = piadagio_fp_buffer_lcd_ugram.glyph[6];
+
+	printd("%s\n", __FUNCTION__);
+	// Copy the result back to buf
+	return sprintf(buf, "Glyph 6:\nUpdated: %u\n" GLYPH_PRINT, piadagio_fp_glyph_updated[6],
+				((tmp_glyph.pixel_line[0] & 16) > 0), ((tmp_glyph.pixel_line[0] & 8) > 0), ((tmp_glyph.pixel_line[0] & 4) > 0), ((tmp_glyph.pixel_line[0] & 2) > 0), ((tmp_glyph.pixel_line[0] & 1) > 0), tmp_glyph.pixel_line[0],
+				((tmp_glyph.pixel_line[1] & 16) > 0), ((tmp_glyph.pixel_line[1] & 8) > 0), ((tmp_glyph.pixel_line[1] & 4) > 0), ((tmp_glyph.pixel_line[1] & 2) > 0), ((tmp_glyph.pixel_line[1] & 1) > 0), tmp_glyph.pixel_line[1],
+				((tmp_glyph.pixel_line[2] & 16) > 0), ((tmp_glyph.pixel_line[2] & 8) > 0), ((tmp_glyph.pixel_line[2] & 4) > 0), ((tmp_glyph.pixel_line[2] & 2) > 0), ((tmp_glyph.pixel_line[2] & 1) > 0), tmp_glyph.pixel_line[2],
+				((tmp_glyph.pixel_line[3] & 16) > 0), ((tmp_glyph.pixel_line[3] & 8) > 0), ((tmp_glyph.pixel_line[3] & 4) > 0), ((tmp_glyph.pixel_line[3] & 2) > 0), ((tmp_glyph.pixel_line[3] & 1) > 0), tmp_glyph.pixel_line[3],
+				((tmp_glyph.pixel_line[4] & 16) > 0), ((tmp_glyph.pixel_line[4] & 8) > 0), ((tmp_glyph.pixel_line[4] & 4) > 0), ((tmp_glyph.pixel_line[4] & 2) > 0), ((tmp_glyph.pixel_line[4] & 1) > 0), tmp_glyph.pixel_line[4],
+				((tmp_glyph.pixel_line[5] & 16) > 0), ((tmp_glyph.pixel_line[5] & 8) > 0), ((tmp_glyph.pixel_line[5] & 4) > 0), ((tmp_glyph.pixel_line[5] & 2) > 0), ((tmp_glyph.pixel_line[5] & 1) > 0), tmp_glyph.pixel_line[5],
+				((tmp_glyph.pixel_line[6] & 16) > 0), ((tmp_glyph.pixel_line[6] & 8) > 0), ((tmp_glyph.pixel_line[6] & 4) > 0), ((tmp_glyph.pixel_line[6] & 2) > 0), ((tmp_glyph.pixel_line[6] & 1) > 0), tmp_glyph.pixel_line[6],
+				((tmp_glyph.pixel_line[7] & 16) > 0), ((tmp_glyph.pixel_line[7] & 8) > 0), ((tmp_glyph.pixel_line[7] & 4) > 0), ((tmp_glyph.pixel_line[7] & 2) > 0), ((tmp_glyph.pixel_line[7] & 1) > 0), tmp_glyph.pixel_line[7]);
+}
+
+// SysFS object to display UGRAM glyph 7
+static ssize_t piadagio_fp_get_ugram_glyph7(struct device *dev, struct device_attribute *dev_attr, char * buf) {
+	struct piadagio_fp_glyph tmp_glyph = piadagio_fp_buffer_lcd_ugram.glyph[7];
+
+	printd("%s\n", __FUNCTION__);
+	// Copy the result back to buf
+	return sprintf(buf, "Glyph 7:\nUpdated: %u\n" GLYPH_PRINT, piadagio_fp_glyph_updated[7],
+				((tmp_glyph.pixel_line[0] & 16) > 0), ((tmp_glyph.pixel_line[0] & 8) > 0), ((tmp_glyph.pixel_line[0] & 4) > 0), ((tmp_glyph.pixel_line[0] & 2) > 0), ((tmp_glyph.pixel_line[0] & 1) > 0), tmp_glyph.pixel_line[0],
+				((tmp_glyph.pixel_line[1] & 16) > 0), ((tmp_glyph.pixel_line[1] & 8) > 0), ((tmp_glyph.pixel_line[1] & 4) > 0), ((tmp_glyph.pixel_line[1] & 2) > 0), ((tmp_glyph.pixel_line[1] & 1) > 0), tmp_glyph.pixel_line[1],
+				((tmp_glyph.pixel_line[2] & 16) > 0), ((tmp_glyph.pixel_line[2] & 8) > 0), ((tmp_glyph.pixel_line[2] & 4) > 0), ((tmp_glyph.pixel_line[2] & 2) > 0), ((tmp_glyph.pixel_line[2] & 1) > 0), tmp_glyph.pixel_line[2],
+				((tmp_glyph.pixel_line[3] & 16) > 0), ((tmp_glyph.pixel_line[3] & 8) > 0), ((tmp_glyph.pixel_line[3] & 4) > 0), ((tmp_glyph.pixel_line[3] & 2) > 0), ((tmp_glyph.pixel_line[3] & 1) > 0), tmp_glyph.pixel_line[3],
+				((tmp_glyph.pixel_line[4] & 16) > 0), ((tmp_glyph.pixel_line[4] & 8) > 0), ((tmp_glyph.pixel_line[4] & 4) > 0), ((tmp_glyph.pixel_line[4] & 2) > 0), ((tmp_glyph.pixel_line[4] & 1) > 0), tmp_glyph.pixel_line[4],
+				((tmp_glyph.pixel_line[5] & 16) > 0), ((tmp_glyph.pixel_line[5] & 8) > 0), ((tmp_glyph.pixel_line[5] & 4) > 0), ((tmp_glyph.pixel_line[5] & 2) > 0), ((tmp_glyph.pixel_line[5] & 1) > 0), tmp_glyph.pixel_line[5],
+				((tmp_glyph.pixel_line[6] & 16) > 0), ((tmp_glyph.pixel_line[6] & 8) > 0), ((tmp_glyph.pixel_line[6] & 4) > 0), ((tmp_glyph.pixel_line[6] & 2) > 0), ((tmp_glyph.pixel_line[6] & 1) > 0), tmp_glyph.pixel_line[6],
+				((tmp_glyph.pixel_line[7] & 16) > 0), ((tmp_glyph.pixel_line[7] & 8) > 0), ((tmp_glyph.pixel_line[7] & 4) > 0), ((tmp_glyph.pixel_line[7] & 2) > 0), ((tmp_glyph.pixel_line[7] & 1) > 0), tmp_glyph.pixel_line[7]);
+}
+
 // SysFS object to display the online LED status
 static ssize_t piadagio_fp_get_led_online(struct device *dev, struct device_attribute *dev_attr, char * buf) {
 	printd("%s\n", __FUNCTION__);
@@ -519,7 +761,7 @@ static ssize_t piadagio_fp_set_led_power(struct device *dev, struct device_attri
 	return count;
 }
 
-// SysFS object to display the power LED status
+// SysFS object to display the module version
 static ssize_t piadagio_fp_get_version(struct device *dev, struct device_attribute *dev_attr, char * buf) {
 	unsigned char *tmp_version = PIADAGIOFP_VERSION;
 	printd("%s\n", __FUNCTION__);
@@ -532,6 +774,14 @@ static DEVICE_ATTR(fp_stats, S_IRUGO, piadagio_fp_get_stats, NULL);
 static DEVICE_ATTR(fp_do_update, 0644, piadagio_fp_get_do_update, piadagio_fp_set_do_update);
 static DEVICE_ATTR(fp_do_update_screen, 0644, piadagio_fp_get_do_update_screen, piadagio_fp_set_do_update_screen);
 static DEVICE_ATTR(fp_i2c_buffer, S_IRUGO, piadagio_fp_get_i2c_buffer, NULL);
+static DEVICE_ATTR(fp_glyph0, S_IRUGO, piadagio_fp_get_ugram_glyph0, NULL);
+static DEVICE_ATTR(fp_glyph1, S_IRUGO, piadagio_fp_get_ugram_glyph1, NULL);
+static DEVICE_ATTR(fp_glyph2, S_IRUGO, piadagio_fp_get_ugram_glyph2, NULL);
+static DEVICE_ATTR(fp_glyph3, S_IRUGO, piadagio_fp_get_ugram_glyph3, NULL);
+static DEVICE_ATTR(fp_glyph4, S_IRUGO, piadagio_fp_get_ugram_glyph4, NULL);
+static DEVICE_ATTR(fp_glyph5, S_IRUGO, piadagio_fp_get_ugram_glyph5, NULL);
+static DEVICE_ATTR(fp_glyph6, S_IRUGO, piadagio_fp_get_ugram_glyph6, NULL);
+static DEVICE_ATTR(fp_glyph7, S_IRUGO, piadagio_fp_get_ugram_glyph7, NULL);
 static DEVICE_ATTR(fp_led_online, 0644, piadagio_fp_get_led_online, piadagio_fp_set_led_online);
 static DEVICE_ATTR(fp_led_power, 0644, piadagio_fp_get_led_power, piadagio_fp_set_led_power);
 static DEVICE_ATTR(fp_version, S_IRUGO, piadagio_fp_get_version, NULL);
@@ -595,9 +845,6 @@ static int piadagio_fp_probe(struct i2c_client *client, const struct i2c_device_
 	// Initialize the mutex
 	mutex_init(&data->update_lock);
 
-	// Clear the lcd buffer
-	piadagio_fp_buffer_lcd_clear();
-
 	/* If our driver requires additional data initialization
 	 * we do it here. For our intents and purposes, we only
 	 * set the data->kind which is taken from the i2c_device_id.
@@ -606,6 +853,12 @@ static int piadagio_fp_probe(struct i2c_client *client, const struct i2c_device_
 
 	// Store for character driver operations
 	piadagio_fp_i2c_client = client;
+
+	// Clear the lcd buffer
+	piadagio_fp_buffer_lcd_clear();
+
+	// Initialise the lcd ugram buffer
+	piadagio_fp_buffer_ugram_init();
 
 	// We now create our character device driver
 	piadagio_fp_major = register_chrdev(0, PIADAGIOFP_I2C_DEVNAME, &piadagio_fp_fops);
@@ -641,6 +894,14 @@ static int piadagio_fp_probe(struct i2c_client *client, const struct i2c_device_
 	device_create_file(dev, &dev_attr_fp_do_update);
 	device_create_file(dev, &dev_attr_fp_do_update_screen);
 	device_create_file(dev, &dev_attr_fp_i2c_buffer);
+	device_create_file(dev, &dev_attr_fp_glyph0);
+	device_create_file(dev, &dev_attr_fp_glyph1);
+	device_create_file(dev, &dev_attr_fp_glyph2);
+	device_create_file(dev, &dev_attr_fp_glyph3);
+	device_create_file(dev, &dev_attr_fp_glyph4);
+	device_create_file(dev, &dev_attr_fp_glyph5);
+	device_create_file(dev, &dev_attr_fp_glyph6);
+	device_create_file(dev, &dev_attr_fp_glyph7);
 	device_create_file(dev, &dev_attr_fp_led_online);
 	device_create_file(dev, &dev_attr_fp_led_power);
 	device_create_file(dev, &dev_attr_fp_version);
@@ -678,6 +939,14 @@ static int piadagio_fp_remove(struct i2c_client * client) {
 	device_remove_file(dev, &dev_attr_fp_do_update);
 	device_remove_file(dev, &dev_attr_fp_do_update_screen);
 	device_remove_file(dev, &dev_attr_fp_i2c_buffer);
+	device_remove_file(dev, &dev_attr_fp_glyph0);
+	device_remove_file(dev, &dev_attr_fp_glyph1);
+	device_remove_file(dev, &dev_attr_fp_glyph2);
+	device_remove_file(dev, &dev_attr_fp_glyph3);
+	device_remove_file(dev, &dev_attr_fp_glyph4);
+	device_remove_file(dev, &dev_attr_fp_glyph5);
+	device_remove_file(dev, &dev_attr_fp_glyph6);
+	device_remove_file(dev, &dev_attr_fp_glyph7);
 	device_remove_file(dev, &dev_attr_fp_led_online);
 	device_remove_file(dev, &dev_attr_fp_led_power);
 	device_remove_file(dev, &dev_attr_fp_version);

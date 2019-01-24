@@ -10,15 +10,19 @@
 #define printi(...) pr_info(PIADAGIOFP_LOG_PREFIX __VA_ARGS__)
 #define printn(...) pr_notice(PIADAGIOFP_LOG_PREFIX __VA_ARGS__)
 
-#define PIADAGIOFP_VERSION	"1.00"
+#define PIADAGIOFP_VERSION	"1.01"
 
 #define	PIADAGIOFP_I2C_ADDR	0x11
 #define PIADAGIOFP_I2C_DEVNAME "piadagio_fp"
-//#define PIADAGIOFP_BUF_LEN 	80
 #define PIADAGIOFP_WQ_NAME 	"piadagio_fp_wq"
 
-#define PIADAGIOFP_MODE_SELECTED_LCD 0x1
-#define PIADAGIOFP_MODE_SELECTED_LED 0x2
+#define	I2C_MSG_TYPE_CLEAR	0x1					// Clear screen
+#define	I2C_MSG_TYPE_CHAR	0x2					// Write characters to lcd
+#define	I2C_MSG_TYPE_GLYPH	0x4					// Update user defined fonts
+#define	I2C_MSG_TYPE_LED	0x8					// Control leds
+
+#define	BUFFER_WRITE_CHAR	0x1					// Write to character buffer
+#define	BUFFER_WRITE_GLYPH	0x2					// Write to glyph buffer
 
 #define LCD_LINE_LEN		0x14
 struct piadagio_fp_char_buffer {
@@ -27,10 +31,23 @@ struct piadagio_fp_char_buffer {
 	char line3[LCD_LINE_LEN];
 	char line4[LCD_LINE_LEN];
 };
-#define SCREEN_BUFFER_LEN	(LCD_LINE_LEN * 4)
-#define I2C_MSG_LEN_UPDATE_LED	3				// Size of command to update the LEDs
-#define I2C_MSG_LEN_UPDATE_LCD	((LCD_LINE_LEN * 2) + 3)	// Size of command to update half the lcd (This is the maximum msg size)
-#define I2C_BUFFER_LEN		(I2C_MSG_LEN_UPDATE_LCD + 1)	// Maximum i2c command size + 1 for the null character from sprintf
+#define SCREEN_BUFFER_LEN		(LCD_LINE_LEN * 4)
+#define	I2C_MSG_LEN_UPDATE_CGRAM	11				// Size of command to update 1 CGRAM glyph
+#define I2C_MSG_LEN_UPDATE_LED		3				// Size of command to update the LEDs
+#define I2C_MSG_LEN_UPDATE_LCD		((LCD_LINE_LEN * 2) + 3)	// Size of command to update half the lcd (This is the maximum msg size)
+#define I2C_BUFFER_LEN			(I2C_MSG_LEN_UPDATE_LCD + 1)	// Maximum i2c command size + 1 for the null character from sprintf
+
+struct piadagio_fp_glyph {						// Structure to hold data for a LCD UGRAM character
+	unsigned char pixel_line[8];
+};
+struct piadagio_fp_glyphs {						// Structure to hold complete LCD UGRAM data
+	struct piadagio_fp_glyph glyph[8];
+};
+#define	GLYPH_BUFFER_LEN	(8 * 8)
+
+#define	GLYPH_PRINT_HEAD	"---------------------\n"
+#define	GLYPH_PRINT_LINE	"| %u | %u | %u | %u | %u |	= %u\n"
+#define GLYPH_PRINT		GLYPH_PRINT_HEAD GLYPH_PRINT_LINE GLYPH_PRINT_HEAD GLYPH_PRINT_LINE GLYPH_PRINT_HEAD GLYPH_PRINT_LINE GLYPH_PRINT_HEAD GLYPH_PRINT_LINE GLYPH_PRINT_HEAD GLYPH_PRINT_LINE GLYPH_PRINT_HEAD GLYPH_PRINT_LINE GLYPH_PRINT_HEAD GLYPH_PRINT_LINE GLYPH_PRINT_HEAD GLYPH_PRINT_LINE GLYPH_PRINT_HEAD
 
 struct piadagio_fp_data {
 	struct mutex update_lock;
@@ -42,8 +59,10 @@ struct piadagio_fp_data {
 // General routines
 /////////////////////////////////////////////////////////////////////
 void piadagio_fp_buffer_lcd_clear(void);
+void piadagio_fp_buffer_ugram_init(void);
 int piadagio_fp_i2c_get_status(void);
 int piadagio_fp_i2c_update_screen(void);
+int piadagio_fp_i2c_update_glyph(unsigned char glyph_index);
 int piadagio_fp_i2c_update_leds(void);
 
 // Workqueue routines
