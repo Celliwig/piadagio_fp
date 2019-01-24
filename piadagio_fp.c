@@ -519,6 +519,13 @@ static ssize_t piadagio_fp_set_led_power(struct device *dev, struct device_attri
 	return count;
 }
 
+// SysFS object to display the power LED status
+static ssize_t piadagio_fp_get_version(struct device *dev, struct device_attribute *dev_attr, char * buf) {
+	unsigned char *tmp_version = PIADAGIOFP_VERSION;
+	printd("%s\n", __FUNCTION__);
+	return sprintf(buf, "%s\n", tmp_version);
+}
+
 static DEVICE_ATTR(fp_command, S_IRUGO, piadagio_fp_get_command, NULL);
 static DEVICE_ATTR(fp_lcd_buffer, S_IRUGO, piadagio_fp_get_lcd_buffer, NULL);
 static DEVICE_ATTR(fp_stats, S_IRUGO, piadagio_fp_get_stats, NULL);
@@ -527,6 +534,7 @@ static DEVICE_ATTR(fp_do_update_screen, 0644, piadagio_fp_get_do_update_screen, 
 static DEVICE_ATTR(fp_i2c_buffer, S_IRUGO, piadagio_fp_get_i2c_buffer, NULL);
 static DEVICE_ATTR(fp_led_online, 0644, piadagio_fp_get_led_online, piadagio_fp_set_led_online);
 static DEVICE_ATTR(fp_led_power, 0644, piadagio_fp_get_led_power, piadagio_fp_set_led_power);
+static DEVICE_ATTR(fp_version, S_IRUGO, piadagio_fp_get_version, NULL);
 
 ////////////////////////////////////////////////////////////////////
 // I2C methods
@@ -635,6 +643,7 @@ static int piadagio_fp_probe(struct i2c_client *client, const struct i2c_device_
 	device_create_file(dev, &dev_attr_fp_i2c_buffer);
 	device_create_file(dev, &dev_attr_fp_led_online);
 	device_create_file(dev, &dev_attr_fp_led_power);
+	device_create_file(dev, &dev_attr_fp_version);
 
 	// Create the first workqueue task
 	queue_delayed_work(piadagio_fp_wq, &piadagio_fp_wq_task_lcd, 10);
@@ -671,6 +680,7 @@ static int piadagio_fp_remove(struct i2c_client * client) {
 	device_remove_file(dev, &dev_attr_fp_i2c_buffer);
 	device_remove_file(dev, &dev_attr_fp_led_online);
 	device_remove_file(dev, &dev_attr_fp_led_power);
+	device_remove_file(dev, &dev_attr_fp_version);
 	device_destroy(piadagio_fp_class, MKDEV(piadagio_fp_major, 0));
 
 	class_unregister(piadagio_fp_class);
@@ -726,3 +736,4 @@ module_i2c_driver(piadagio_fp_driver);
 MODULE_AUTHOR("Charles Burgoyne");
 MODULE_DESCRIPTION("Adagio front panel driver");
 MODULE_LICENSE("GPL");
+MODULE_VERSION(PIADAGIOFP_VERSION);

@@ -10,6 +10,8 @@
 #define printi(...) pr_info(PIADAGIOFP_LOG_PREFIX __VA_ARGS__)
 #define printn(...) pr_notice(PIADAGIOFP_LOG_PREFIX __VA_ARGS__)
 
+#define PIADAGIOFP_VERSION	"1.00"
+
 #define	PIADAGIOFP_I2C_ADDR	0x11
 #define PIADAGIOFP_I2C_DEVNAME "piadagio_fp"
 //#define PIADAGIOFP_BUF_LEN 	80
