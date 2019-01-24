@@ -1,7 +1,7 @@
 # piadagio_fp
 
 # Overview
-Raspberry Pi kernel module to drive the front panel from Adagio Sound Server. The module creates a character device which is backed by a buffer which is used to write to the LCD display on the front panel. Writing to the device, writes to the buffer. While communicating with the front panel it buffers the value of the current button command which is returned when reading from the character device. It supports lseek for tranversing the buffer memory, and fsync which is used to signal that the driver can write the buffer to the LCD (This allows several writes to be made before the results are flushed to the LCD e.g. buffer clear, then write). Additional buffer space is allocated to support user generated glyphs.
+Raspberry Pi kernel module to drive the front panel from Adagio Sound Server with modified firmware (see Adagio-PIC-FP). The module creates a character device which is backed by a buffer which is used to write to the LCD display on the front panel. Writing to the device, writes to the buffer. While communicating with the front panel it buffers the value of the current button command which is returned when reading from the character device. It supports lseek for tranversing the buffer memory, and fsync which is used to signal that the driver can write the buffer to the LCD (This allows several writes to be made before the results are flushed to the LCD e.g. buffer clear, then write). Additional buffer space is used to support user generated glyphs.
 
 # SYSFS objects
  - fp_lcd_buffer - RO - Returns the contents of the LCD buffer.
