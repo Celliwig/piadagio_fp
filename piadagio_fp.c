@@ -30,6 +30,10 @@
 #include <linux/sched.h>
 #include "piadagio_fp.h"
 
+static bool fp_require_fsync = true;
+module_param(fp_require_fsync, bool, 0660);
+MODULE_PARM_DESC(fp_require_fsync, "Controls whether a fsync is required to update the front panel, after writing to screen buffer.\n");
+
 ////////////////////////////////////////////////////////////////////
 // Global variables
 ////////////////////////////////////////////////////////////////////
@@ -57,15 +61,16 @@ static int piadagio_fp_major;
 static struct piadagio_fp_char_buffer piadagio_fp_buffer_lcd_screen;	// Buffer for the LCD screen
 static char *piadagio_fp_buffer_index = 0;
 static char piadagio_fp_buffer_i2c_rw[I2C_BUFFER_LEN];			// Structure to r/w i2c data (+1 for the null character from sprintf)
-static int piadagio_fp_buffer_command = 0;				// Command read from the FP
-static int piadagio_fp_i2c_update_screen_half = 0;			// Used to store which half of the screen to update next
+static unsigned int piadagio_fp_buffer_command = 0;			// Command read from the FP
 static unsigned long piadagio_fp_i2c_update_lcd_counter = 0;		// Update counter (LCD)
 static unsigned long piadagio_fp_i2c_update_led_counter = 0;		// Update counter (LED)
 static unsigned long piadagio_fp_i2c_update_errors_counter = 0;		// Update errors counter
 static unsigned long piadagio_fp_i2c_update_retries_counter = 0;	// Update retry counter
-static unsigned int piadagio_fp_i2c_update_do = 1;			// Controls whether an update actually happens (they're still scheduled)
+static unsigned short piadagio_fp_i2c_update_do = 1;			// Controls whether an update actually happens (they're still scheduled)
+static unsigned short piadagio_fp_i2c_update_do_screen = 1;		// Controls whether a screen update actually happens
 static unsigned short piadagio_fp_led_online = 0;			// Online LED status
 static unsigned short piadagio_fp_led_power = 1;			// Power LED status
+static bool piadagio_fp_i2c_update_screen_other_half = false;		// Used to store which half of the screen to update next
 
 ////////////////////////////////////////////////////////////////////
 // General routines
@@ -117,7 +122,7 @@ int piadagio_fp_i2c_update_screen() {
 
 	//printd("%s\n", __FUNCTION__);
 
-	if (piadagio_fp_i2c_update_screen_half == 0) {
+	if (!piadagio_fp_i2c_update_screen_other_half) {
 		bytes_2_send = snprintf(&piadagio_fp_buffer_i2c_rw[0], I2C_BUFFER_LEN,
 					"%c%c%c%.*s%.*s",					// Format: length + cmd + position + lines
 					I2C_MSG_LEN_UPDATE_LCD - 1,				// Message length doesn't include this byte
@@ -140,10 +145,10 @@ int piadagio_fp_i2c_update_screen() {
 		mutex_unlock(&data->update_lock);
 		if (bytes_2_send == I2C_MSG_LEN_UPDATE_LCD) {
 			//printd("%s: Updated screen.\n", __FUNCTION__);
-			if (piadagio_fp_i2c_update_screen_half > 0) {
-				piadagio_fp_i2c_update_screen_half = 0;
+			if (piadagio_fp_i2c_update_screen_other_half) {
+				piadagio_fp_i2c_update_screen_other_half = false;
 			} else {
-				piadagio_fp_i2c_update_screen_half++;
+				piadagio_fp_i2c_update_screen_other_half = true;
 			}
 			return 0;
 		} else {
@@ -203,30 +208,36 @@ static void piadagio_fp_task_lcd_update(struct work_struct *work) {
 
 	//printd("%s\n", __FUNCTION__);
 
-	if (piadagio_fp_i2c_update_do > 0) {					// Check whether to run an update
-		piadagio_fp_i2c_update_lcd_counter++;				// Debug helper, to know if this rountine is being executed
-		fp_status = piadagio_fp_i2c_get_status();			// Check the FP status,
-		if (fp_status >= 0) {
-			if (fp_status < 2) {					// Is it ready for another command?
-				fp_status = piadagio_fp_i2c_update_screen();
-				if (fp_status == 0) {				// Did the write succeed?
-					// Do we writing need to write the second half of the screen?
-					if (piadagio_fp_i2c_update_screen_half == 0) {
-						task_delay = 10;		// No, so wait (giving a rough refresh of 10Hz)
-					} else {
-						task_delay = 1;			// Yes, so keep the delay short
+	if (piadagio_fp_i2c_update_do > 0) {						// Check whether to run an update
+		fp_status = piadagio_fp_i2c_get_status();				// Check the FP status,
+
+		if (piadagio_fp_i2c_update_do_screen > 0) {				// Can we update the screen? Waiting for fsync?
+			piadagio_fp_i2c_update_lcd_counter++;				// Debug helper, to know if this rountine is being executed
+
+			if (fp_status >= 0) {
+				if (fp_status < 2) {					// Is it ready for another command?
+					fp_status = piadagio_fp_i2c_update_screen();
+					if (fp_status == 0) {				// Did the write succeed?
+						// Do we writing need to write the second half of the screen?
+						if (!piadagio_fp_i2c_update_screen_other_half) {
+							task_delay = 10;		// No, so wait (giving a rough refresh of 10Hz)
+						} else {
+							task_delay = 1;			// Yes, so keep the delay short
+						}
+					} else {					// Failed write to screen, so reschedule
+						piadagio_fp_i2c_update_errors_counter++;
+						task_delay = 1;
 					}
-				} else {					// Failed write to screen, so reschedule
-					piadagio_fp_i2c_update_errors_counter++;
+				} else {						// FP processing existing command so reschedule
+					piadagio_fp_i2c_update_retries_counter++;
 					task_delay = 1;
 				}
-			} else {						// FP processing existing command so reschedule
-				piadagio_fp_i2c_update_retries_counter++;
+			} else {							// Error reading, schedule another check
+				piadagio_fp_i2c_update_errors_counter++;
 				task_delay = 1;
 			}
-		} else {							// Error reading, schedule another check
-			piadagio_fp_i2c_update_errors_counter++;
-			task_delay = 1;
+		} else {
+			task_delay = 1;							// Waiting for buffer to be updated, so reschedule
 		}
 	}
 
@@ -245,6 +256,7 @@ static void piadagio_fp_task_led_update(struct work_struct *work) {
 	if (piadagio_fp_i2c_update_do > 0) {					// Check whether to run an update
 		piadagio_fp_i2c_update_led_counter++;				// Debug helper, to know if this rountine is being executed
 		fp_status = piadagio_fp_i2c_get_status();			// Check the FP status,
+
 		if (fp_status >= 0) {
 			if (fp_status < 2) {					// Is it ready for another command?
 				fp_status = piadagio_fp_i2c_update_leds();
@@ -335,6 +347,10 @@ static ssize_t piadagio_fp_write(struct file * fp, const char __user * buffer, s
 		}
 	}
 
+	if (fp_require_fsync) {
+		piadagio_fp_i2c_update_do_screen = 0;
+	}
+
 	return num_write;
 }
 
@@ -357,11 +373,18 @@ static loff_t piadagio_fp_llseek(struct file *file, loff_t offset, int origin) {
 	return offset;
 }
 
+// This allows the screen buffer to be flushed to the FP
+static int piadagio_fp_fsync(struct file *file, loff_t start, loff_t end, int datasync) {
+	piadagio_fp_i2c_update_do_screen = 1;
+	return 0;
+}
+
 static struct file_operations piadagio_fp_fops = {
 	.owner = THIS_MODULE,
 	.read = piadagio_fp_read,
 	.write = piadagio_fp_write,
 	.llseek = piadagio_fp_llseek,
+	.fsync = piadagio_fp_fsync,
 	.open = piadagio_fp_open,
 	.release = piadagio_fp_release
 };
@@ -414,6 +437,26 @@ static ssize_t piadagio_fp_set_do_update(struct device *dev, struct device_attri
 		return err;
 	} else {
 		piadagio_fp_i2c_update_do = value;
+	}
+	return count;
+}
+
+// SysFS object to display whether the screen update is enabled
+static ssize_t piadagio_fp_get_do_update_screen(struct device *dev, struct device_attribute *dev_attr, char * buf) {
+	printd("%s\n", __FUNCTION__);
+	// Copy the result back to buf
+	return sprintf(buf, "Update enabled: %u\n", piadagio_fp_i2c_update_do_screen);
+}
+
+// SysFS object to set whether the screen update is enabled
+static ssize_t piadagio_fp_set_do_update_screen(struct device *dev, struct device_attribute * devattr, const char * buf, size_t count) {
+	int value, err;
+	printd("%s\n", __FUNCTION__);
+	err = kstrtoint(buf, 10, &value);
+	if (err < 0) {
+		return err;
+	} else {
+		piadagio_fp_i2c_update_do_screen = value;
 	}
 	return count;
 }
@@ -480,6 +523,7 @@ static DEVICE_ATTR(fp_command, S_IRUGO, piadagio_fp_get_command, NULL);
 static DEVICE_ATTR(fp_lcd_buffer, S_IRUGO, piadagio_fp_get_lcd_buffer, NULL);
 static DEVICE_ATTR(fp_stats, S_IRUGO, piadagio_fp_get_stats, NULL);
 static DEVICE_ATTR(fp_do_update, 0644, piadagio_fp_get_do_update, piadagio_fp_set_do_update);
+static DEVICE_ATTR(fp_do_update_screen, 0644, piadagio_fp_get_do_update_screen, piadagio_fp_set_do_update_screen);
 static DEVICE_ATTR(fp_i2c_buffer, S_IRUGO, piadagio_fp_get_i2c_buffer, NULL);
 static DEVICE_ATTR(fp_led_online, 0644, piadagio_fp_get_led_online, piadagio_fp_set_led_online);
 static DEVICE_ATTR(fp_led_power, 0644, piadagio_fp_get_led_power, piadagio_fp_set_led_power);
@@ -587,6 +631,7 @@ static int piadagio_fp_probe(struct i2c_client *client, const struct i2c_device_
 	device_create_file(dev, &dev_attr_fp_lcd_buffer);
 	device_create_file(dev, &dev_attr_fp_stats);
 	device_create_file(dev, &dev_attr_fp_do_update);
+	device_create_file(dev, &dev_attr_fp_do_update_screen);
 	device_create_file(dev, &dev_attr_fp_i2c_buffer);
 	device_create_file(dev, &dev_attr_fp_led_online);
 	device_create_file(dev, &dev_attr_fp_led_power);
@@ -622,6 +667,7 @@ static int piadagio_fp_remove(struct i2c_client * client) {
 	device_remove_file(dev, &dev_attr_fp_lcd_buffer);
 	device_remove_file(dev, &dev_attr_fp_stats);
 	device_remove_file(dev, &dev_attr_fp_do_update);
+	device_remove_file(dev, &dev_attr_fp_do_update_screen);
 	device_remove_file(dev, &dev_attr_fp_i2c_buffer);
 	device_remove_file(dev, &dev_attr_fp_led_online);
 	device_remove_file(dev, &dev_attr_fp_led_power);

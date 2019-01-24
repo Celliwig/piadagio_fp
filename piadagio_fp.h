@@ -55,6 +55,8 @@ static int piadagio_fp_open(struct inode * inode, struct file *fp);
 static int piadagio_fp_release(struct inode * inode, struct file * fp);
 static ssize_t piadagio_fp_read(struct file *filp, char *buffer, size_t length, loff_t * offset);
 static ssize_t piadagio_fp_write(struct file * fp, const char __user * buf, size_t count, loff_t * offset);
+static loff_t piadagio_fp_llseek(struct file *file, loff_t offset, int origin);
+static int piadagio_fp_fsync(struct file *file, loff_t start, loff_t end, int datasync);
 
 // I2C driver
 /////////////////////////////////////////////////////////////////////
