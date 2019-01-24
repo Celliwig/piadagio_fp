@@ -1,0 +1,23 @@
+// Definitions for the (Pi)Adagio Front Panel
+/dts-v1/;
+/plugin/;
+#include <dt-bindings/pinctrl/bcm2835.h>
+
+/ {
+	compatible = "brcm,bcm2835", "brcm,bcm2708", "brcm,bcm2709";
+
+	fragment@0 {
+		target = <&i2c1>;
+		__overlay__ {
+			#address-cells = <1>;
+			#size-cells = <0>;
+			status = "okay";
+
+			piadagio_fp@11 {
+				compatible = "piadagio_fp";
+				reg = <0x11>;
+				status = "okay";
+			};
+		};
+	};
+};
