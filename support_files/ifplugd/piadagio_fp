@@ -1,0 +1,16 @@
+#!/bin/sh
+set -e
+
+DEV_PATH="/dev/piadagio_fp"
+SYSFS_PATH=`find /sys -name fp_led_online`
+
+if [ -e ${SYSFS_PATH} ]; then
+	case "$2" in
+	up)
+		echo 1 > ${SYSFS_PATH}
+		;;
+	down)
+		echo 0 > ${SYSFS_PATH}
+		;;
+	esac
+fi

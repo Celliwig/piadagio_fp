@@ -1,0 +1,1 @@
+SUBSYSTEM=="piadagio_fp", GROUP="palms", MODE="0660", OPTIONS="last_rule"
